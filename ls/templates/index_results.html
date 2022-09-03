@@ -9,19 +9,28 @@
             background: gray;
             color: black;
         }
+        .first {
+            width: 100%;
+            display: flex;
+        }
+
+        .right {
+            flex-grow: 1;
+            background: white;
+            margin-left: 15px;
+        }
 
         form {
             background: white;
             display: flex;
-            margin: 0 auto;
         }
 
         fieldset {
-            margin: 0px auto;
             background: white;
             padding: 0 0 0 0;
             border: none;
             box-sizing: border-box;
+            margin-top: 7px;
         }
 
         ul {
@@ -40,7 +49,7 @@
             border: solid 1px gray;
             flex-grow: 1;
         }
-        div {
+        .pf {
             display: flex;
         }
 
@@ -54,14 +63,26 @@
             font-weight: lighter;
         }
 
-        @media screen and (min-width: 768px) {
-            #top_form, fieldset, div, footer {
+        @media screen and (min-width: 1080px) {
+            #top_form, fieldset {
                 width: 768px;
+            }
+            .first {
+                flex-direction: row;
             }
         }
 
-        @media screen and (max-width: 768px) {
+        @media screen and (max-width: 1080px) {
             #top_form, fieldset, div {
+                width: 100%;
+            }
+
+            .first {
+                flex-direction: column;
+            }
+            .right {
+                margin-top: 15px;
+                margin-left: 0;
                 width: 100%;
             }
         }
@@ -73,8 +94,17 @@
             height: 25px;
             color: black;
             background: white;
-            font-weight: lighter;
+            font-weight: bold;
+            margin-bottom: 5px;
+            margin-left: 5px;
+            margin-right: 5px;
         }
+
+        input[type='submit']:hover {
+            background: gray;
+            color: white;
+        }
+
         .pf {
             flex-grow: 1;
         }
@@ -85,7 +115,6 @@
 
         li {
             word-break: break-word;
-            margin-top: 20px;
         }
 
         input[name='keyword'], legend {
@@ -98,23 +127,25 @@
         }
 
         footer {
-            margin: 20px auto;
+            margin-top: 20px;
         }
         .fu {
             list-style: none;
             display: flex;
             font-size: 9px;
             background: white;
-            font-weight: lighter;
         }
         .fu > li {
             text-align: center;
             flex-grow: 1;
-            margin-top: 0;
+            margin-top: 8px;
+            margin-bottom: 8px;
         }
     </style>
 </head>
 <body>
+<div class="first">
+    <div class="left">
     <form id='top_form' action="/" method="post">
         {% if title %}
         <input type="text" name="keyword" value="{{title}}">
@@ -137,7 +168,7 @@
             </li>
             {% end %}
         </ul>
-        <div>
+        <div class="pf">
         {% if last_page %}
             <form class='pf' action="/" method="post">
                 {% if title %}
@@ -159,12 +190,16 @@
         {% end %}
 
         {% if not last_page and not next_page %}
-            <form style="margin-top: 20px;"><span>没有更多啦</span></form>
+            <form style="margin-top: 20px; text-align: center; width: 100%; display: flex;"><span style="flex-grow: 1;">没有更多啦</span></form>
         {% end %}
         </div>
     </fieldset>
-
-    <footer>
+</div>
+    <div class="right">
+        {% include website_nav.html %}
+    </div>
+</div>
+<footer>
     <ul class='fu'>
         <li>
             <a>联系我们</a>
@@ -180,6 +215,7 @@
         </li>
     </ul>
 </footer>
+
 <script>
 window.onload = function() {
     console.log('%c天下风云出我辈\n一入江湖岁月催\n皇图霸业谈笑中\n不胜人生一场醉', 'color:gray;font-size:33px;font-weight:lighter');

@@ -66,7 +66,7 @@ class SearchHandler(BaseHandler):
 
 def make_app():
     settings = dict(
-        debug=False,
+        debug=True,
         # xsrf_cookies=True,
         static_path=os.path.join(os.path.dirname(__file__), "static"),
         template_path=os.path.join(os.path.dirname(__file__), "templates"),
