@@ -1,0 +1,23 @@
+{
+  "website": {
+    "table_name": "website",
+    "attrs": {
+      "title": {
+        "type": "text"
+      },
+      "url": {
+        "type": "text"
+      },
+      "text": {
+        "type": "text"
+      },
+      "html": {
+        "type": "text"
+      },
+      "date": {
+        "type": "date",
+        "format": "yyyy-MM-dd HH:mm:ss"
+      }
+    }
+  }
+}

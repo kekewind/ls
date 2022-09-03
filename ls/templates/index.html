@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh_CN">
+<head>
+    <meta charset="UTF-8">
+    <link rel="icon" href="/static/favicon.ico">
+    <title>快搜</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1">
+    <style>
+        body {
+            background: gray;
+            color: black;
+        }
+
+        form {
+            background: white;
+            display: flex;
+        }
+
+        input {
+            outline: none;
+            caret-color: black;
+            text-align: center;
+            width: 100%;
+            height: 32px;
+            font-size: 20px;
+            margin: 2px 2px 2px 2px;
+            border: solid 1px gray;
+            flex-grow: 1;
+        }
+
+        input:focus {
+            text-align: left;
+        }
+        fieldset {
+            background: white;
+            border: none;
+            padding-left: 0;
+            padding-right: 0;
+            margin-left: 0;
+            margin-right: 0;
+        }
+
+        @media screen and (min-width: 768px) {
+            form, fieldset {
+                width: 5.905511811023622in;
+                position: absolute;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+            }
+            fieldset {
+                transform: translate(-2.952755905511811in, 21px);
+            }
+            footer {
+                position: fixed;
+                width: 99%;
+                left: 50%;
+                bottom: 5px;
+                transform: translateX(-50%);
+            }
+        }
+
+        @media screen and (max-width: 768px) {
+            form, fieldset {
+                width: 100%;
+            }
+        }
+
+        input[name='keyword'], p, legend {
+            font-weight: lighter;
+            color: #66666;
+        }
+
+        legend {
+            transform: translateY(50%);
+        }
+
+        footer {
+            font-weight: lighter;
+            background: white;
+        }
+        .fu {
+            list-style: none;
+            display: flex;
+            font-size: 9px;
+        }
+        .fu > li {
+            text-align: center;
+            flex-grow: 1;
+        }
+    </style>
+</head>
+<body>
+    <form action="/" method="post">
+        {% if title %}
+        <input type="text" placeholder="快搜" name="keyword" value="{{title}}" autofocus="autofocus">
+        {% else %}
+        <input type="text" placeholder="快搜" name="keyword">
+        {% end %}
+    </form>
+    {% if null %}
+    <fieldset>
+        <legend>搜索结果(0)</legend>
+    </fieldset>
+    {% end %}
+
+<footer>
+    <ul class='fu'>
+        <li>
+            <a>联系我们</a>
+        </li>
+        <li>
+            <a>广告营销</a>
+        </li>
+        <li>
+            <a>京备案号: 000000888</a>
+        </li>
+        <li>
+            <a>法律举报邮箱: syz_lm@126.com</a>
+        </li>
+    </ul>
+</footer>
+</body>
+
+<script>
+window.onload = function() {
+    console.log('%c天下风云出我辈\n一入江湖岁月催\n皇图霸业谈笑中\n不胜人生一场醉', 'color:gray;font-size:33px;font-weight:lighter');
+};
+</script>
+</html>
