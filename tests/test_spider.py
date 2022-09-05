@@ -78,3 +78,15 @@ def test_dyn_store():
     store_queue = 'store_queue'
     dg = StoreWebsite(host, port, uname, passwd, 'dyn_' + store_queue, 'dyn_' + task_queue)
     dg.loop_task()
+
+
+def test_robots():
+    url = 'https://www.taobao.com/robots.txt'
+    from urllib.robotparser import RobotFileParser
+    import requests
+    r = requests.get(url, timeout=10, headers={'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36'}, verify=False)
+    r.encoding = r.apparent_encoding
+
+    rfp = RobotFileParser()
+    rfp.parse(r.text.splitlines())
+    print(rfp.can_fetch('kuaiso', 'https://www.taobao.com/'))

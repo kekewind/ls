@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 
 setup(
     name='ls',
-    version='0.0.1',
+    version='0.0.2',
     description='最后的搜索',
     packages=find_packages(),
     include_package_data=True,
@@ -15,7 +15,8 @@ setup(
         'requests',
         'lxml',
         'cssselect',
-        'requests-html'
+        'requests-html',
+        'pycrypto'
     ],
     entry_points="""
     [console_scripts]

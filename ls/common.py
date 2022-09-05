@@ -4,6 +4,8 @@ import sys
 
 from tornado.httpclient import AsyncHTTPClient
 from urllib.parse import quote
+from Crypto.Cipher import AES
+from binascii import b2a_hex, a2b_hex
 
 
 class ElasticSearchCli:
@@ -65,6 +67,19 @@ class ElasticSearchCli:
                                     allow_nonstandard_methods=True, body=json.dumps(body))
         return res.body
 
+    async def get_doc_by_id(self, table_name, id):
+        url = '%s/%s/_doc/%s' % (self._uri, table_name, id)
+
+        res = await self._cli.fetch(url, method='GET', raise_error=False)
+        return res.body
+
+    def parse_doc(self, body):
+        jd = json.loads(body)
+        if '_source' in jd:
+            return jd['_source']
+        else:
+            return None
+
     def parse_get_docs_hits(self, body):
         jd = json.loads(body)
         rows = []
@@ -99,6 +114,14 @@ class LocalFileStorage(object):
 
         if not os.path.exists(root):
             os.makedirs(root)
+
+    def del_file(self, filename):
+        fp = os.path.sep.join([self._root, filename])
+        os.remove(fp)
+
+    def exist(self, filename):
+        fp = os.path.sep.join([self._root, filename])
+        return os.path.exists(fp)
 
     def get(self, filename):
         fp = os.path.sep.join([self._root, filename])
@@ -136,3 +159,34 @@ def tail_call_optimized(func):
                     kwargs = e.kwargs
 
     return _wrapper
+
+
+class AESCBC(object):
+    def __init__(self, key):
+        self._key = key.encode('utf-8')
+
+    def _add_to_16(self, text):
+        # 如果text不足16位的倍数就用空格补足为16位
+        if len(text.encode('utf-8')) % 16:
+            add = 16 - (len(text.encode('utf-8')) % 16)
+        else:
+            add = 0
+        text = text + ('\0' * add)
+        return text.encode('utf-8')
+
+    def encrypt(self, text):
+        mode = AES.MODE_CBC
+        iv = b'qqqqqqqqqqqqqqqq'
+        text = self._add_to_16(text)
+        cryptos = AES.new(self._key, mode, iv)
+        cipher_text = cryptos.encrypt(text)
+        # 因为AES加密后的字符串不一定是ascii字符集的，输出保存可能存在问题，所以这里转为16进制字符串
+        return b2a_hex(cipher_text).decode()
+
+    def decrypt(self, text):
+        # 解密后，去掉补足的空格用strip() 去掉
+        iv = b'qqqqqqqqqqqqqqqq'
+        mode = AES.MODE_CBC
+        cryptos = AES.new(self._key, mode, iv)
+        plain_text = cryptos.decrypt(a2b_hex(text))
+        return bytes.decode(plain_text).rstrip('\0')

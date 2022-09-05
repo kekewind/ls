@@ -17,6 +17,15 @@
       "date": {
         "type": "date",
         "format": "yyyy-MM-dd HH:mm:ss"
+      },
+      "click_num": {
+        "type": "long"
+      },
+      "stay_time": {
+        "type": "long"
+      },
+      "webpage_uid": {
+        "type": "text"
       }
     }
   }

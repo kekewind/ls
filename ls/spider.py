@@ -35,6 +35,7 @@ import logging
 from urllib.parse import urlparse
 from urllib.robotparser import RobotFileParser
 
+import aioredis
 import charset_normalizer
 import click
 import pika
@@ -47,6 +48,16 @@ from ls import config
 from ls.db import get_full_index_search_cli, get_file_storage
 
 urllib3.disable_warnings()
+
+
+class HTTPResponseContentZeroException(Exception):
+    def __init__(self, *args: object) -> None:
+        super().__init__(*args)
+
+
+class NoEtreeHTMLDomReqRedirectException(Exception):
+    def __init__(self, *args: object) -> None:
+        super().__init__(*args)
 
 
 class RedirectTooManyException(Exception):
@@ -74,27 +85,53 @@ class UrlDuplExceotion(Exception):
         super().__init__(*args)
 
 
+class RedisDuplicateUrlFilter(object):
+    def __init__(self, redis_host, redis_port, redis_passwd, redis_dup_key):
+        self.redis_host = redis_host
+        self.redis_port = redis_port
+        self.redis_passwd = redis_passwd
+        self.redis_dup_key = redis_dup_key
+
+    def __del__(self):
+        if hasattr(self, '_redis_conn'):
+            if self._redis_conn:
+                loop = asyncio.get_event_loop()
+                loop.run_until_complete(self._redis_conn.close())
+
+    def _get_conn(self):
+        if not hasattr(self, '_redis_conn'):
+            self._redis_conn = aioredis.from_url('redis://:%s@%s:%d' % (self.redis_passwd, self.redis_host, self.redis_port))
+        return self._redis_conn
+
+    async def find(self, url):
+        u = hashlib.md5(url.encode()).hexdigest()
+        if await self._get_conn().sismember(self.redis_dup_key, u):
+            return True
+        await self._get_conn().sadd(self.redis_dup_key, u)
+        return False
+
+
 class RabbitMQCli(object):
-    def __init__(self, host, port, uname, passwd, task_queue, store_queue):
-        self._host = host
-        self._port = port
-        self._uname = uname
-        self._passwd = passwd
-        self._task_queue = task_queue
-        self._store_queue = store_queue
-        self._conn = None
-        self._ch = None
+    def __init__(self, mq_host, mq_port, mq_uname, mq_passwd, mq_task_queue, mq_store_queue):
+        self._mq_host = mq_host
+        self._mq_port = mq_port
+        self._mq_uname = mq_uname
+        self._mq_passwd = mq_passwd
+        self._mq_task_queue = mq_task_queue
+        self._mq_store_queue = mq_store_queue
+        self._mq_conn = None
+        self._mq_ch = None
 
     def close(self):
-        if self._conn: self._conn.close()
+        if self._mq_conn: self._mq_conn.close()
 
     def _connect(self):
-        if not self._conn:
-            credentials = pika.PlainCredentials(self._uname, self._passwd)
-            self._conn = pika.BlockingConnection(pika.ConnectionParameters(host=self._host,
-                                                                           port=self._port,
+        if not self._mq_conn:
+            credentials = pika.PlainCredentials(self._mq_uname, self._mq_passwd)
+            self._mq_conn = pika.BlockingConnection(pika.ConnectionParameters(host=self._mq_host,
+                                                                           port=self._mq_port,
                                                                            credentials=credentials))
-        return self._conn
+        return self._mq_conn
 
     def callback(self, ch, method, properties, body):
         # ch.basic_publish(exchange='', routing_key=store_queue, body=message)
@@ -104,75 +141,76 @@ class RabbitMQCli(object):
     def loop_task(self):
         conn = self._connect()
         channel = conn.channel()
-        channel.queue_declare(queue=self._task_queue)
-        channel.queue_declare(queue=self._store_queue)
+        channel.queue_declare(queue=self._mq_task_queue)
+        channel.queue_declare(queue=self._mq_store_queue)
 
         channel.basic_qos(prefetch_count=10)
-        channel.basic_consume(queue=self._task_queue, on_message_callback=self.callback)
+        channel.basic_consume(queue=self._mq_task_queue, on_message_callback=self.callback)
         channel.start_consuming()
 
     def send_task(self, body):
         conn = self._connect()
-        if not (self._ch and self._ch.is_open):
-            self._ch = conn.channel()
+        if not (self._mq_ch and self._mq_ch.is_open):
+            self._mq_ch = conn.channel()
 
-        self._ch.basic_publish(exchange='', routing_key=self._task_queue, body=json.dumps(body))
+        self._mq_ch.basic_publish(exchange='', routing_key=self._mq_task_queue, body=json.dumps(body))
 
 
-class BaseWebsite(RabbitMQCli):
-    def __init__(self, host, port, uname, passwd, task_queue, store_queue):
-        super(BaseWebsite, self).__init__(host, port, uname, passwd, task_queue, store_queue)
+class BaseWebsite(RabbitMQCli, RedisDuplicateUrlFilter):
+    def __init__(self, mq_host, mq_port, mq_uname, mq_passwd, task_queue, store_queue,
+                 redis_host, redis_port, redis_pass, dup_filter_key):
+        RabbitMQCli.__init__(self, mq_host, mq_port, mq_uname, mq_passwd, task_queue, store_queue)
+        RedisDuplicateUrlFilter.__init__(self, redis_host, redis_port, redis_pass, dup_filter_key)
 
         self._headers = {
             'User-Agent': 'kuaiso-webspider'
         }
         self._rfp = RobotFileParser()
-        self._robots_dupl = set()
-        self._url_dupl = set()
 
     def _parse_robot(self, url):
         if not hasattr(BaseWebsite, '_redirect_num'):
             self._redirect_num = 1
 
         if self._redirect_num > 2:
-            raise RedirectTooManyException()
+            raise RedirectTooManyException('redirect too many err')
 
-        if url not in self._robots_dupl:
-            r = requests.get(url, headers=self._headers, verify=False, timeout=10, allow_redirects=False)
-            r.encoding = r.apparent_encoding if r.apparent_encoding else 'utf8'
-            if r.url == url:
-                self._rfp.parse(r.text)
-                self._robots_dupl.add(url)
-            else:
-                base_url = self._parse_base_uri(r.url)
-                self._redirect_num = self._redirect_num + 1
-                self._parse_robot(base_url + '/robots.txt')
+        r = requests.get(url, headers=self._headers, verify=False, timeout=10, allow_redirects=False)
+        r.encoding = r.apparent_encoding if r.apparent_encoding else 'utf8'
+        if r.url == url:
+            self._rfp.parse(r.text.splitlines())
+        else:
+            base_url = self._parse_base_uri(r.url)
+            self._redirect_num = self._redirect_num + 1
+            self._parse_robot(base_url + '/robots.txt')
 
-            r.close()
+        r.close()
 
     def _parse_base_uri(self, url):
         pr = urlparse(url)
         if pr.scheme and pr.netloc:
             return pr.scheme + '://' + pr.netloc
         else:
-            raise WrongUrlException()
+            raise WrongUrlException('wrong url err')
 
     def climb(self, url):
         self._parse_robot(self._parse_base_uri(url) + '/robots.txt')
 
         if url and self._rfp.can_fetch(self._headers['User-Agent'], url):
             return self.fetch_and_parse(url)
-        raise GoEndException('go end url: %s' % url)
+        raise GoEndException('go end url: %s err' % url)
 
     def callback(self, ch, method, properties, body):
         try:
             url = json.loads(body)
-            if url in self._url_dupl:
-                raise UrlDuplExceotion()
+            loop = asyncio.get_event_loop()
+            future = asyncio.ensure_future(self.find(url))
+            loop.run_until_complete(future)
+            if future.result():
+                raise UrlDuplExceotion('url dup err')
 
             title, html, text, url, links = self.climb(url)
             logging.info(title + ' ** ' + url)
-            ch.basic_publish(exchange='', routing_key=self._store_queue,
+            ch.basic_publish(exchange='', routing_key=self._mq_store_queue,
                              body=json.dumps([title, html, text, url]))
 
             for link in links:
@@ -194,9 +232,17 @@ class BaseWebsite(RabbitMQCli):
         except requests.exceptions.InvalidURL as e:
             ch.basic_ack(delivery_tag=method.delivery_tag)
             logging.error('%s * %s', url, str(e))
+        except NoEtreeHTMLDomReqRedirectException as e:
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+            logging.error('%s * %s', url, str(e))
+        except HTTPResponseContentZeroException as e:
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+            logging.error('%s * %s', url, str(e))
         except Exception as e:
             ch.basic_ack(delivery_tag=method.delivery_tag)
             logging.error('%s * %s', url, str(e))
+            import traceback
+            logging.error('%s', traceback.format_exc())
 
     def fetch_and_parse(self, url):
         raise NotImplementedError()
@@ -204,23 +250,35 @@ class BaseWebsite(RabbitMQCli):
 
 class DGStaticWebsite(BaseWebsite):
     def fetch_and_parse(self, url):
-        r = requests.get(url, headers=self._headers, verify=False, timeout=10, allow_redirects=False)
-        r.encoding = charset_normalizer.detect(r.content)['encoding']
-        dom = etree.HTML(r.text)
-        title_texts = '-'.join(dom.xpath('//title/text()'))
-        title = title_texts
-        html = r.text
-        # text = ''.join(dom.xpath('string(.)')).strip().replace('\n', '').replace('\t', '').replace(' ', '')
-        text = ''.join(dom.xpath('//meta[@name="description"]/@content'))
-        links = set()
-        for href in dom.xpath('//a/@href'):
-            pr = urlparse(href)
-            if not pr.netloc:
-                pr = urlparse(url)
-                href = pr.scheme + '://' + pr.netloc + href
-            links.add(href)
+        session = requests.session()
+        session.max_redirects = 1
+        try:
+            r = session.get(url, headers=self._headers, verify=False, timeout=10)
+            # if r.status_code in (301, 302):
+            #     raise NoEtreeHTMLDomReqRedirectException('dom is none err, http status 301 or 302')
+            if len(r.content) == 0 and r.status_code not in (301, 302):
+                raise HTTPResponseContentZeroException('http response content 0 err')
 
-        return title, html, text, url, links
+            r.encoding = charset_normalizer.detect(r.content)['encoding']
+            dom = etree.HTML(r.text)
+            title_texts = '-'.join(dom.xpath('//title/text()'))
+            title = title_texts
+            html = r.text
+            # text = ''.join(dom.xpath('string(.)')).strip().replace('\n', '').replace('\t', '').replace(' ', '')
+            text = ''.join(dom.xpath('//meta[@name="description"]/@content'))
+            links = set()
+            for href in dom.xpath('//a/@href'):
+                pr = urlparse(href)
+                if not pr.netloc:
+                    pr = urlparse(url)
+                    href = pr.scheme + '://' + pr.netloc + href
+                links.add(href)
+
+            return title, html, text, url, links
+        except Exception as e:
+            raise e
+        finally:
+            session.close()
 
 
 class DGdyWebsite(BaseWebsite):
@@ -271,19 +329,47 @@ class StoreWebsite(RabbitMQCli):
             elif len(html) > 0:
                 uid = hashlib.md5(html.encode()).hexdigest()
             else:
-                raise AllNoneException()
+                raise AllNoneException('title text html all none err')
 
             logging.info(title + ' ** ' + url)
+            future = asyncio.ensure_future(self._get_full_index().get_doc_by_id('website', uid))
+            self._get_event_loop().run_until_complete(future)
+            body = future.result()
+            doc = self._get_full_index().parse_doc(body)
+            if not doc:
+                self._get_event_loop().run_until_complete(self._get_full_index().add_doc('website', uid, {
+                    'url': url,
+                    'title': title,
+                    'text': text,
+                    'html': uid,
+                    "webpage_uid": hashlib.md5(html.encode()).hexdigest(),
+                    'date': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'click_num': 0,
+                    'stay_time': 0
+                }))
+                if config.SAVE_WEB_PAGE:
+                    new_webpage_uid = hashlib.md5(html.encode()).hexdigest()
+                    self._get_file_storage().post(new_webpage_uid, html)
+            else:
+                if config.SAVE_WEB_PAGE:
+                    webpage_uid = None
+                    old_webpage_uid = doc['webpage_uid']
+                    new_webpage_uid = hashlib.md5(html.encode()).hexdigest()
+                    # 如果网页指纹和上一次不同，则 代表网页内容发生变化
+                    if old_webpage_uid != new_webpage_uid:
+                        # 删除旧的网页缓存，增加新的
+                        self._get_file_storage().del_file(old_webpage_uid)
+                        self._get_file_storage().post(new_webpage_uid, html)
+                        webpage_uid = new_webpage_uid
 
-            self._get_event_loop().run_until_complete(self._get_full_index().add_doc('website', uid, {
-                'url': url,
-                'title': title,
-                'text': text,
-                'html': uid,
-                'date': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            }))
-
-            self._get_file_storage().post(uid, html)
+                    self._get_event_loop().run_until_complete(self._get_full_index().edit_doc('website', uid, {
+                        'url': url,
+                        'title': title,
+                        'text': text,
+                        'html': webpage_uid,
+                        "webpage_uid": new_webpage_uid,
+                        'date': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    }))
 
             ch.basic_ack(delivery_tag=method.delivery_tag)
         except AllNoneException as e:
@@ -294,22 +380,28 @@ class StoreWebsite(RabbitMQCli):
             ch.basic_ack(delivery_tag=method.delivery_tag)
 
 
-def static_task_queue(host, port, uname, passwd, static_task_queue_name, static_store_queue_name):
-    dg = DGStaticWebsite(host, port, uname, passwd, static_task_queue_name, static_store_queue_name)
+def static_task_queue(mq_host, mq_port, mq_uname, mq_passwd, static_task_queue_name, static_store_queue_name,
+                      redis_host, redis_port, redis_pass, dup_filter_key):
+    dg = DGStaticWebsite(mq_host, mq_port, mq_uname, mq_passwd, static_task_queue_name, static_store_queue_name,
+                         redis_host, redis_port, redis_pass, dup_filter_key)
     dg.loop_task()
 
 
-def dyn_task_queue(host, port, uname, passwd, dyn_task_queue_name, dyn_store_queue_name):
-    dg = DGdyWebsite(host, port, uname, passwd, dyn_task_queue_name, dyn_store_queue_name)
+def dyn_task_queue(mq_host, mq_port, mq_uname, mq_passwd, dyn_task_queue_name, dyn_store_queue_name, redis_host,
+                   redis_port, redis_pass, dup_filter_key):
+    dg = DGdyWebsite(mq_host, mq_port, mq_uname, mq_passwd, dyn_task_queue_name, dyn_store_queue_name, redis_host,
+                     redis_port, redis_pass, dup_filter_key)
     dg.loop_task()
 
 
-def publish_url(host, port, uname, passwd,
+def publish_url(mq_host, mq_port, mq_uname, mq_passwd,
                 static_task_queue_name, static_store_queue_name,
                 dyn_task_queue_name, dyn_store_queue_name,
-                static_url, dyn_url):
-    st = DGStaticWebsite(host, port, uname, passwd, static_task_queue_name, static_store_queue_name)
-    dy = DGdyWebsite(host, port, uname, passwd, dyn_task_queue_name, dyn_store_queue_name)
+                static_url, dyn_url, redis_host, redis_port, redis_pass, dup_filter_key):
+    st = DGStaticWebsite(mq_host, mq_port, mq_uname, mq_passwd, static_task_queue_name, static_store_queue_name,
+                         redis_host, redis_port, redis_pass, dup_filter_key)
+    dy = DGdyWebsite(mq_host, mq_port, mq_uname, mq_passwd, dyn_task_queue_name, dyn_store_queue_name, redis_host,
+                     redis_port, redis_pass, dup_filter_key)
     if static_url:
         st.send_task(static_url)
     if dyn_url:
@@ -319,22 +411,22 @@ def publish_url(host, port, uname, passwd,
     dy.close()
 
 
-def static_store_queue(host, port, uname, passwd, static_task_queue_name, static_store_queue_name):
-    dg = StoreWebsite(host, port, uname, passwd, static_store_queue_name, static_task_queue_name)
+def static_store_queue(mq_host, mq_port, mq_uname, mq_passwd, static_task_queue_name, static_store_queue_name):
+    dg = StoreWebsite(mq_host, mq_port, mq_uname, mq_passwd, static_store_queue_name, static_task_queue_name)
     dg.loop_task()
 
 
-def dyn_store_queue(host, port, uname, passwd, dyn_task_queue_name, dyn_store_queue_name):
-    dg = StoreWebsite(host, port, uname, passwd, dyn_store_queue_name, dyn_task_queue_name)
+def dyn_store_queue(mq_host, mq_port, mq_uname, mq_passwd, dyn_task_queue_name, dyn_store_queue_name):
+    dg = StoreWebsite(mq_host, mq_port, mq_uname, mq_passwd, dyn_store_queue_name, dyn_task_queue_name)
     dg.loop_task()
 
 
 @click.command()
 @click.option('--command', help='dyn_store_queue, static_store_queue, publish_url, dyn_task_queue, static_task_queue')
-@click.option('--host', help='rabbitmq search host', default='localhost')
-@click.option('--port', help='rabbitmq search port', default=5672)
-@click.option('--uname', help='rabbitmq uname', default='guest')
-@click.option('--passwd', help='rabbitmq passwd', default='guest')
+@click.option('--mq_host', help='rabbitmq search host', default='localhost')
+@click.option('--mq_port', help='rabbitmq search port', default=5672)
+@click.option('--mq_uname', help='rabbitmq uname', default='guest')
+@click.option('--mq_passwd', help='rabbitmq passwd', default='guest')
 @click.option('--static_task_queue_name', help='the task queue name that is the spider for static website',
               default='static_task_queue')
 @click.option('--static_store_queue_name', help='the task queue name that is to store static website data',
@@ -347,26 +439,35 @@ def dyn_store_queue(host, port, uname, passwd, dyn_task_queue_name, dyn_store_qu
 @click.option('--dyn_url', help='url you want to use dyn webspider to crawl')
 @click.option('--LOCAL_FILE_STORAGE_ROOT', help='path of the page source you want to save',
               default=config.LOCAL_FILE_STORAGE_ROOT)
-def main(command, host, port, uname, passwd,
+@click.option('--SAVE_WEB_PAG', help='save web page to the path', default=config.SAVE_WEB_PAGE, type=bool)
+@click.option('--redis_host', help='redis host', default='localhost')
+@click.option('--redis_port', help='redis port', default=6379)
+@click.option('--redis_pass', help='redis passwd', default='123456')
+@click.option('--dup_filter_key', help='redis dup_filter_key', default='website_dup')
+def main(command, mq_host, mq_port, mq_uname, mq_passwd,
          static_task_queue_name, static_store_queue_name,
          dyn_store_queue_name, dyn_task_queue_name,
-         static_url, dyn_url, local_file_storage_root):
+         static_url, dyn_url, local_file_storage_root, save_web_pag,
+         redis_host, redis_port, redis_pass, dup_filter_key):
     logging.basicConfig(level=logging.INFO)
     config.LOCAL_FILE_STORAGE_ROOT = local_file_storage_root
+    config.SAVE_WEB_PAGE = save_web_pag
 
     if command == 'static_task_queue':
-        static_task_queue(host, port, uname, passwd, static_task_queue_name, static_store_queue_name)
+        static_task_queue(mq_host, mq_port, mq_uname, mq_passwd, static_task_queue_name, static_store_queue_name,
+                          redis_host, redis_port, redis_pass, dup_filter_key)
     elif command == 'static_store_queue':
-        static_store_queue(host, port, uname, passwd, static_task_queue_name, static_store_queue_name)
+        static_store_queue(mq_host, mq_port, mq_uname, mq_passwd, static_task_queue_name, static_store_queue_name)
     elif command == 'dyn_store_queue':
-        dyn_store_queue(host, port, uname, passwd, dyn_task_queue_name, dyn_store_queue_name)
+        dyn_store_queue(mq_host, mq_port, mq_uname, mq_passwd, dyn_task_queue_name, dyn_store_queue_name)
     elif command == 'dyn_task_queue':
-        dyn_task_queue(host, port, uname, passwd, dyn_task_queue_name, dyn_store_queue_name)
+        dyn_task_queue(mq_host, mq_port, mq_uname, mq_passwd, dyn_task_queue_name, dyn_store_queue_name, redis_host,
+                       redis_port, redis_pass, dup_filter_key)
     elif command == 'publish_url':
-        publish_url(host, port, uname, passwd,
+        publish_url(mq_host, mq_port, mq_uname, mq_passwd,
                     static_task_queue_name, static_store_queue_name,
                     dyn_task_queue_name, dyn_store_queue_name,
-                    static_url, dyn_url)
+                    static_url, dyn_url, redis_host, redis_port, redis_pass, dup_filter_key)
     else:
         logging.info('command args maybe invalid.')
     click.echo(command)
