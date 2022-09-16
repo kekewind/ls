@@ -8,13 +8,14 @@ python3 setup.py bdist_wheel
 
 之后会生成下面3个命令:
 1. kuaiso-web 快搜web服务接口，默认地址localhost:9999
-2. kuaiso-db 用于初始化搜索引擎，kuaiso-db --command init_full_index
+2. kuaiso-db 用于初始化搜索引擎，kuaiso-db --commanlsd init_full_index
 3. kuaiso-spider 用于启动爬虫任务，输入kuaiso-spider --help查看命令详细
 
 项目启动，需要依赖，2个中间件：
 1. ElasticSearch最新版本就行，如果有问题，可以联系我
 2. RabbitMQ最新版本，现已发现如果unack数等于`channel.basic_qos(prefetch_count=10)`中的`prefetch_count`，那么
 消费者会阻塞住
+3. Redis用于爬虫url去重，需要设置密码，具体请看源码
 
 接下来需要记录一下，es的配置，主要说配置，我是将elasticsearch.yml中的这个选项改为false再重启ElasticSearch就不用输入账号
 密码，同时，也不需要走ssl通道，直接http就可以：
